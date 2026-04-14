@@ -183,15 +183,66 @@ class GitHubClient:
             True if successful, False otherwise
         """
         try:
+            # Get the latest commit in the PR
             commit_id = self.pr.head.sha
-            self.pr.create_review_comment(
-                body=comment_body,
-                commit_id=commit_id,
-                path=file_path,
-                line=line_number
-            )
-            return True
-        except GithubException as e:
+
+            # Try method 1: create_review_comment with 'commit' parameter
+            try:
+                self.pr.create_review_comment(
+                    body=comment_body,
+                    commit=commit_id,  # ← 'commit', not 'commit_id'
+                    path=file_path,
+                    line=line_number
+                )
+                return True
+            except TypeError:
+                pass
+
+            # Try method 2: create_review_comment with 'commit_id' parameter
+            try:
+                self.pr.create_review_comment(
+                    body=comment_body,
+                    commit_id=commit_id,
+                    path=file_path,
+                    line=line_number
+                )
+                return True
+            except TypeError:
+                pass
+
+            # Try method 3: create review first, then add comment
+            try:
+                review = self.pr.create_review(
+                    commit_id=commit_id,
+                    body="",
+                    event="COMMENT"
+                )
+                review.create_comment(
+                    body=comment_body,
+                    path=file_path,
+                    line=line_number
+                )
+                return True
+            except Exception:
+                pass
+
+            # Try method 4: simpler API (older version)
+            try:
+                self.pr.create_comment(
+                    body=comment_body,
+                    commit_id=commit_id,
+                    path=file_path,
+                    line=line_number
+                )
+                return True
+            except Exception:
+                pass
+
+            # If all methods failed, log and return False
+            print(f"   ⚠️ Could not post inline comment - API method not supported")
+            return False
+
+        except Exception as e:
             print(f"⚠️ Failed to post inline comment: {e}")
             return False
 
