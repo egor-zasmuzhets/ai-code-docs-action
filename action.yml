@@ -3,15 +3,20 @@ description: 'Automatically generates documentation and code review for code in 
 author: 'egor-zasmuzhets'
 
 inputs:
+  provider:
+    description: 'LLM provider: "auto", "groq", "github-models"'
+    required: false
+    default: 'auto'
+
   api-key:
-    description: 'API key for Groq'
-    required: true
+    description: 'API key for Groq (only needed if provider is "groq" or "auto" and no GitHub token)'
+    required: false
     no_log: true
 
   model:
-    description: 'Groq model to use'
+    description: 'Model name (provider-specific)'
     required: false
-    default: 'llama-3.3-70b-versatile'
+    default: ''
 
   review-prompt:
     description: 'Custom prompt for code review (overrides default)'
@@ -53,8 +58,9 @@ runs:
       run: python ${{ github.action_path }}/src/main.py
       shell: bash
       env:
+        LLM_PROVIDER: ${{ inputs.provider }}
         GROQ_API_KEY: ${{ inputs.api-key }}
-        GROQ_MODEL: ${{ inputs.model }}
+        LLM_MODEL: ${{ inputs.model }}
         REVIEW_PROMPT: ${{ inputs.review-prompt }}
         DOC_PROMPT: ${{ inputs.doc-prompt }}
         EXCLUDE_PATTERNS: ${{ inputs.exclude }}
