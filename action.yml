@@ -1,0 +1,34 @@
+name: 'AI Code Docs & Reviewer'
+description: 'Generates documentation and code review for Python code in PRs using LLM'
+author: 'egor-zasmuzhets'
+
+inputs:
+  api-key:
+    description: 'API key for Groq'
+    required: true
+    no_log: true
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: pip install -r ${{ github.action_path }}/requirements.txt
+      shell: bash
+
+    - name: Run analysis
+      run: python ${{ github.action_path }}/src/main.py
+      shell: bash
+      env:
+        INPUT_API_KEY: ${{ inputs.api-key }}
+        GITHUB_TOKEN: ${{ github.token }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+        GITHUB_PR_NUMBER: ${{ github.event.pull_request.number }}
+
+branding:
+  icon: 'book-open'
+  color: 'blue'
