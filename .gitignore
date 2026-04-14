@@ -1,7 +1,25 @@
+# Python
 __pycache__/
-*.pyc
-.env
+*.py[cod]
+*.so
+.Python
+
+# Virtual environments
 venv/
-.venv/
+env/
+.env
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS files
 .DS_Store
+Thumbs.db
+
+# Project specific
 *.log
+*.pid
+*.tmp

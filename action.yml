@@ -1,5 +1,5 @@
 name: 'AI Code Docs & Reviewer'
-description: 'Generates documentation and code review for Python code in PRs using LLM'
+description: 'Automatically generates documentation and code review for code in PRs using LLM'
 author: 'egor-zasmuzhets'
 
 inputs:
@@ -7,10 +7,34 @@ inputs:
     description: 'API key for Groq'
     required: true
     no_log: true
+
   model:
     description: 'Groq model to use'
     required: false
     default: 'llama-3.3-70b-versatile'
+
+  review-prompt:
+    description: 'Custom prompt for code review (overrides default)'
+    required: false
+
+  doc-prompt:
+    description: 'Custom prompt for documentation (overrides default)'
+    required: false
+
+  exclude:
+    description: 'Comma-separated glob patterns to exclude (e.g., "tests/**,**/*_test.py,venv/**")'
+    required: false
+    default: ''
+
+  doc-output-path:
+    description: 'Path to the documentation file'
+    required: false
+    default: 'docs/auto/DOCUMENTATION.md'
+
+  review-output-path:
+    description: 'Directory for review reports'
+    required: false
+    default: 'docs/reviews/'
 
 runs:
   using: 'composite'
@@ -31,6 +55,11 @@ runs:
       env:
         GROQ_API_KEY: ${{ inputs.api-key }}
         GROQ_MODEL: ${{ inputs.model }}
+        REVIEW_PROMPT: ${{ inputs.review-prompt }}
+        DOC_PROMPT: ${{ inputs.doc-prompt }}
+        EXCLUDE_PATTERNS: ${{ inputs.exclude }}
+        DOC_OUTPUT_PATH: ${{ inputs.doc-output-path }}
+        REVIEW_OUTPUT_PATH: ${{ inputs.review-output-path }}
         GITHUB_TOKEN: ${{ github.token }}
         GITHUB_REPOSITORY: ${{ github.repository }}
         GITHUB_PR_NUMBER: ${{ github.event.pull_request.number }}
