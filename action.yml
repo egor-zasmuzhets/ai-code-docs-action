@@ -7,6 +7,10 @@ inputs:
     description: 'API key for Groq'
     required: true
     no_log: true
+  model:
+    description: 'Groq model to use'
+    required: false
+    default: 'llama-3.3-70b-versatile'
 
 runs:
   using: 'composite'
@@ -17,17 +21,20 @@ runs:
         python-version: '3.11'
 
     - name: Install dependencies
-      run: pip install -r ${{ github.action_path }}/requirements.txt
+      run: |
+        pip install httpx PyGithub python-dotenv
       shell: bash
 
     - name: Run analysis
       run: python ${{ github.action_path }}/src/main.py
       shell: bash
       env:
-        INPUT_API_KEY: ${{ inputs.api-key }}
+        GROQ_API_KEY: ${{ inputs.api-key }}
+        GROQ_MODEL: ${{ inputs.model }}
         GITHUB_TOKEN: ${{ github.token }}
         GITHUB_REPOSITORY: ${{ github.repository }}
         GITHUB_PR_NUMBER: ${{ github.event.pull_request.number }}
+        GITHUB_ACTIONS: 'true'
 
 branding:
   icon: 'book-open'

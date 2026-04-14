@@ -24,7 +24,7 @@ class GroqClient:
         return self._parse_response(response)
 
     def _build_prompt(self, code: str, language: str) -> str:
-        """Build prompt for the LLM"""
+        """Build prompt for the LLM with escaped backticks"""
         return f"""You are a code documentation and review expert.
 
 Analyze the following {language} code and return TWO things in JSON format:
@@ -84,6 +84,9 @@ Return ONLY valid JSON in this exact format:
                 )
                 response.raise_for_status()
                 return response.json()
+        except httpx.TimeoutException:
+            print("⚠️ Groq API timeout")
+            return self._get_fallback_response()
         except Exception as e:
             print(f"⚠️ Groq API error: {e}")
             return self._get_fallback_response()
@@ -92,7 +95,14 @@ Return ONLY valid JSON in this exact format:
         """Parse LLM response, extract JSON"""
         try:
             content = response["choices"][0]["message"]["content"]
-            return json.loads(content)
+            content = content.strip()
+            if content.startswith("```json"):
+                content = content[7:]
+            if content.startswith("```"):
+                content = content[3:]
+            if content.endswith("```"):
+                content = content[:-3]
+            return json.loads(content.strip())
         except (KeyError, json.JSONDecodeError) as e:
             print(f"⚠️ Failed to parse LLM response: {e}")
             return self._get_fallback_response()
@@ -117,7 +127,6 @@ Return ONLY valid JSON in this exact format:
 # For local testing
 if __name__ == "__main__":
     from dotenv import load_dotenv
-
     load_dotenv()
 
     api_key = os.getenv("GROQ_API_KEY")
