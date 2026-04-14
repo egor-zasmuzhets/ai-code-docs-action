@@ -1,22 +1,17 @@
 name: 'AI Code Docs & Reviewer'
-description: 'Automatically generates documentation and code review for code in PRs using LLM'
+description: 'Automatically generates documentation and code review for Python code in PRs using Groq LLM'
 author: 'egor-zasmuzhets'
 
 inputs:
-  provider:
-    description: 'LLM provider: "auto", "groq", "github-models"'
-    required: false
-    default: 'auto'
-
   api-key:
-    description: 'API key for Groq (only needed if provider is "groq" or "auto" and no GitHub token)'
-    required: false
+    description: 'Groq API key (get from https://console.groq.com)'
+    required: true
     no_log: true
 
   model:
-    description: 'Model name (provider-specific)'
+    description: 'Groq model to use'
     required: false
-    default: ''
+    default: 'llama-3.3-70b-versatile'
 
   review-prompt:
     description: 'Custom prompt for code review (overrides default)'
@@ -58,9 +53,8 @@ runs:
       run: python ${{ github.action_path }}/src/main.py
       shell: bash
       env:
-        LLM_PROVIDER: ${{ inputs.provider }}
         GROQ_API_KEY: ${{ inputs.api-key }}
-        LLM_MODEL: ${{ inputs.model }}
+        GROQ_MODEL: ${{ inputs.model }}
         REVIEW_PROMPT: ${{ inputs.review-prompt }}
         DOC_PROMPT: ${{ inputs.doc-prompt }}
         EXCLUDE_PATTERNS: ${{ inputs.exclude }}
