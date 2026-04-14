@@ -24,14 +24,15 @@ class GitHubClient:
                 "patch": file.patch
             })
         return files
-    
+
     def get_pr_info(self):
-        """Get basic PR information"""
+        """Get basic information about the PR."""
         return {
             "title": self.pr.title,
             "description": self.pr.body or "",
             "author": self.pr.user.login,
-            "branch": self.pr.head.ref,
+            "branch": self.pr.head.ref,  # ветка, из которой делают PR
+            "base_branch": self.pr.base.ref,  # ветка, в которую хотят влить
             "url": self.pr.html_url,
             "number": self.pr.number
         }
