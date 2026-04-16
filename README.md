@@ -164,4 +164,3 @@ python src/main.py
 ## License
 
 MIT © egor-zasmuzhets
-```
