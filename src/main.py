@@ -1,22 +1,20 @@
 """
 Main entry point for the GitHub Action.
-Fetches PR files, analyzes them with LLM, and generates documentation.
 """
 
 import os
 import sys
-import json
+from datetime import datetime
 from dotenv import load_dotenv
 
-# Load .env for local testing (only if not in GitHub Actions)
 if not os.getenv("GITHUB_ACTIONS"):
     load_dotenv()
-    print("📁 LOCAL MODE: using .env file")
-else:
-    print("🚀 GITHUB ACTIONS MODE")
+    print("📁 LOCAL MODE")
 
 from github_client import GitHubClient
 from llm_client import GroqClient
+from analyzer import detect_language, get_analysis_strategy, extract_signatures
+from utils import parse_exclude_patterns, is_excluded
 
 
 def main():
@@ -24,26 +22,27 @@ def main():
     print("🤖 AI Code Docs & Reviewer - Running")
     print("=" * 55)
 
-    # =========================================================
-    # 1. GET ENVIRONMENT VARIABLES
-    # =========================================================
+    # Get environment variables
     token = os.getenv("GITHUB_TOKEN")
     repo = os.getenv("GITHUB_REPOSITORY")
     pr_number_str = os.getenv("GITHUB_PR_NUMBER")
     groq_api_key = os.getenv("GROQ_API_KEY")
     groq_model = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+    review_prompt = os.getenv("REVIEW_PROMPT")
+    doc_prompt = os.getenv("DOC_PROMPT")
+    exclude_str = os.getenv("EXCLUDE_PATTERNS", "")
+    doc_output_path = os.getenv("DOC_OUTPUT_PATH", "docs/auto/DOCUMENTATION.md")
+    review_output_path = os.getenv("REVIEW_OUTPUT_PATH", "docs/reviews/")
 
-    # Debug info (safe, no secrets printed)
+    exclude_patterns = parse_exclude_patterns(exclude_str)
+
     print(f"\n📋 Configuration:")
     print(f"   Repository: {repo}")
     print(f"   PR Number: {pr_number_str}")
     print(f"   Groq Model: {groq_model}")
-    print(f"   GITHUB_TOKEN exists: {bool(token)}")
-    print(f"   GROQ_API_KEY exists: {bool(groq_api_key)}")
+    print(f"   Exclude patterns: {exclude_patterns if exclude_patterns else 'None'}")
 
-    # =========================================================
-    # 2. VALIDATE REQUIRED VARIABLES
-    # =========================================================
+    # Validate
     missing_vars = []
     if not token:
         missing_vars.append("GITHUB_TOKEN")
@@ -55,383 +54,233 @@ def main():
         missing_vars.append("GROQ_API_KEY")
 
     if missing_vars:
-        print(f"\n❌ Missing required environment variables: {', '.join(missing_vars)}")
+        print(f"\n❌ Missing: {', '.join(missing_vars)}")
         if not os.getenv("GITHUB_ACTIONS"):
-            print("\n💡 For local testing, create .env file with:")
-            print("   GITHUB_TOKEN=your_token")
-            print("   GITHUB_REPOSITORY=owner/repo")
-            print("   GITHUB_PR_NUMBER=123")
-            print("   GROQ_API_KEY=gsk_...")
+            print("\n💡 Create .env file with:\n   GROQ_API_KEY=...\n   GITHUB_TOKEN=...")
         sys.exit(1)
 
     pr_number = int(pr_number_str)
 
-    # =========================================================
-    # 3. INITIALIZE CLIENTS
-    # =========================================================
+    # Initialize clients
     try:
         github = GitHubClient(token, repo, pr_number)
-        llm = GroqClient(groq_api_key, model=groq_model)
+        llm = GroqClient(groq_api_key, groq_model, review_prompt, doc_prompt)
     except Exception as e:
-        print(f"\n❌ Failed to initialize clients: {e}")
+        print(f"\n❌ Failed to initialize: {e}")
         sys.exit(1)
 
-    # =========================================================
-    # 4. GET PR INFORMATION
-    # =========================================================
+    # Get PR info
     try:
         pr_info = github.get_pr_info()
-        print(f"\n📋 Pull Request:")
-        print(f"   Title: {pr_info['title']}")
+        print(f"\n📋 PR: {pr_info['title']}")
         print(f"   Author: {pr_info['author']}")
         print(f"   Branch: {pr_info['branch']} → {pr_info['base_branch']}")
-        print(f"   URL: {pr_info['url']}")
     except Exception as e:
         print(f"\n❌ Failed to get PR info: {e}")
         sys.exit(1)
 
-    # =========================================================
-    # 5. GET CHANGED FILES
-    # =========================================================
+    # Get changed files
     try:
         all_files = github.get_changed_files()
-        python_files = [f for f in all_files if f['filename'].endswith('.py')]
+
+        relevant_files = []
+        excluded_count = 0
+        unknown_count = 0
+
+        for f in all_files:
+            if is_excluded(f['filename'], exclude_patterns):
+                excluded_count += 1
+                continue
+
+            lang = detect_language(f['filename'])
+            if not lang:
+                unknown_count += 1
+                continue
+
+            relevant_files.append({**f, 'language': lang})
 
         print(f"\n📁 Changed files: {len(all_files)} total")
-        print(f"🐍 Python files to analyze: {len(python_files)}")
+        print(f"🔍 To analyze: {len(relevant_files)}")
+        if excluded_count:
+            print(f"   🚫 Excluded: {excluded_count}")
+        if unknown_count:
+            print(f"   ⚠️ Unknown language: {unknown_count}")
 
-        if python_files:
-            for f in python_files:
-                print(f"   - {f['filename']} (+{f['additions']} -{f['deletions']})")
-
-        if not python_files:
-            print("\n⚠️ No Python files changed, skipping analysis")
-            # Still post a comment saying nothing to analyze
-            if os.getenv("GITHUB_ACTIONS"):
-                comment = f"""🤖 **AI Code Reviewer**
-
-No Python files were changed in this PR.
-
-📁 Changed files: {len(all_files)} total
-🐍 Python files: 0
-
-Skipping analysis."""
-                github.create_pr_comment(comment)
-            print("\n✅ Done (no Python files to analyze)")
+        if not relevant_files:
+            print("\n⚠️ No files to analyze")
             sys.exit(0)
     except Exception as e:
-        print(f"\n❌ Failed to get changed files: {e}")
+        print(f"\n❌ Failed to get files: {e}")
         sys.exit(1)
 
-    # =========================================================
-    # 6. ANALYZE EACH PYTHON FILE WITH LLM
-    # =========================================================
-    all_documentation = []
+    # Analyze files
+    all_docs = []
     all_issues = []
-    analysis_errors = 0
 
-    print("\n🔍 Starting code analysis...")
+    print("\n🔍 Starting analysis...")
     print("-" * 55)
 
-    for idx, py_file in enumerate(python_files, 1):
-        print(f"\n[{idx}/{len(python_files)}] Analyzing: {py_file['filename']}")
+    for idx, f in enumerate(relevant_files, 1):
+        print(f"\n[{idx}/{len(relevant_files)}] {f['filename']} ({f['language']})")
 
-        # Get file content
-        content = github._get_file_content(py_file['filename'])
+        content = f.get('content')
         if not content:
-            print(f"   ⚠️ Could not read file content, skipping")
-            analysis_errors += 1
+            content = github._get_file_content(f['filename'])
+
+        if not content:
+            print("   ⚠️ Could not read file")
             continue
 
-        print(f"   📏 Size: {len(content)} characters, {len(content.splitlines())} lines")
+        size = len(content)
+        ratio = (f['additions'] + f['deletions']) / max(size / 10, 1)
+        strategy = get_analysis_strategy(f['language'], size, ratio)
 
-        # Analyze with LLM
+        print(f"   📏 Size: {size} chars, {len(content.splitlines())} lines")
+        print(f"   📊 Strategy: {strategy}")
+
+        if strategy == 'signature':
+            code_to_analyze = extract_signatures(content, f['language'])
+        else:
+            code_to_analyze = content
+
         try:
-            result = llm.analyze_code(content)
+            result = llm.analyze_code(code_to_analyze, f['language'])
         except Exception as e:
-            print(f"   ❌ LLM analysis failed: {e}")
-            analysis_errors += 1
+            print(f"   ❌ Analysis failed: {e}")
             continue
 
         # Collect documentation
         doc = result.get("documentation", {})
-        all_documentation.append({
-            "file": py_file['filename'],
-            "doc": doc
-        })
+        all_docs.append({"file": f['filename'], "doc": doc})
 
         # Collect issues
         review = result.get("review", {})
         issues = review.get("issues", [])
         for issue in issues:
-            issue["file"] = py_file['filename']
+            issue["file"] = f['filename']
+            issue["language"] = f['language']
             all_issues.append(issue)
 
+            # Post inline comment if line number is available
+            if os.getenv("GITHUB_ACTIONS") and issue.get('line', 0) > 0:
+                icon = {'high': '🔴', 'medium': '🟡', 'low': '🟢'}.get(issue.get('severity'), '⚪')
+                body = f"""**{icon} {issue.get('severity', '').upper()}** - {issue.get('type', 'issue')}
+
+**Issue:** {issue.get('description')}
+
+"""
+                if issue.get('code_snippet'):
+                    body += f"**Code:**\n```{f['language']}\n{issue.get('code_snippet')}\n```\n\n"
+                body += f"**Suggestion:** {issue.get('suggestion')}"
+
+                github.post_inline_comment(f['filename'], issue['line'], body)
+                print(f"      💬 Inline comment at line {issue['line']}")
+
         print(f"   ✅ Found {len(issues)} issues")
-        if issues:
-            for issue in issues[:3]:  # Show first 3 issues
-                severity_icon = {'high': '🔴', 'medium': '🟡', 'low': '🟢'}.get(issue.get('severity'), '⚪')
-                print(f"      {severity_icon} {issue.get('type', 'issue')}: {issue.get('description', '')[:60]}")
-            if len(issues) > 3:
-                print(f"      ... and {len(issues) - 3} more")
 
     print("-" * 55)
-    print(f"\n📊 Analysis complete:")
-    print(f"   Files analyzed: {len(all_documentation)}")
-    print(f"   Total issues found: {len(all_issues)}")
-    print(f"   Errors: {analysis_errors}")
+    print(f"\n📊 Complete: {len(all_docs)} files, {len(all_issues)} issues")
 
-    # =========================================================
-    # 7. GENERATE DOCUMENTATION FILE
-    # =========================================================
-    if all_documentation:
-        doc_content = generate_documentation(all_documentation, pr_info)
-        doc_path = "docs/auto/DOCUMENTATION.md"
-
+    # Generate documentation
+    if all_docs:
+        doc_content = generate_documentation(all_docs, pr_info)
         if os.getenv("GITHUB_ACTIONS"):
-            try:
-                github.commit_documentation(
-                    doc_path,
-                    doc_content,
-                    f"docs: auto-update documentation for PR #{pr_number}"
-                )
-                print(f"\n📄 Documentation updated: {doc_path}")
-            except Exception as e:
-                print(f"\n⚠️ Failed to commit documentation: {e}")
-        else:
-            print(f"\n📄 Documentation preview (not committed in local mode):")
-            print(f"   Path: {doc_path}")
-            # Print first 500 chars as preview
-            print("\n   Preview:")
-            print("   " + doc_content[:500].replace("\n", "\n   ") + "...")
+            github.commit_documentation(doc_output_path, doc_content, f"docs: update PR #{pr_number}")
+            print(f"\n📄 Docs: {doc_output_path}")
 
-    # =========================================================
-    # 8. GENERATE REVIEW REPORT
-    # =========================================================
+    # Generate review report
     if all_issues:
         review_content = generate_review_report(all_issues, pr_info)
-        review_path = f"docs/reviews/PR-{pr_number}.md"
-
+        review_path = f"{review_output_path}PR-{pr_number}.md"
         if os.getenv("GITHUB_ACTIONS"):
-            try:
-                github.commit_documentation(
-                    review_path,
-                    review_content,
-                    f"review: add code review report for PR #{pr_number}"
-                )
-                print(f"🔍 Review report created: {review_path}")
-            except Exception as e:
-                print(f"\n⚠️ Failed to commit review report: {e}")
-        else:
-            print(f"\n🔍 Review report preview (not committed in local mode):")
-            print(f"   Path: {review_path}")
-            print("\n   Preview:")
-            print("   " + review_content[:500].replace("\n", "\n   ") + "...")
-    else:
-        print("\n🔍 No issues found — skipping review report")
+            github.commit_documentation(review_path, review_content, f"review: PR #{pr_number}")
+            print(f"🔍 Report: {review_path}")
 
-    # =========================================================
-    # 9. POST PR COMMENT (only in GitHub Actions)
-    # =========================================================
+    # Post summary
     if os.getenv("GITHUB_ACTIONS"):
-        try:
-            comment = generate_pr_comment(
-                num_files=len(all_documentation),
-                num_issues=len(all_issues),
-                pr_number=pr_number,
-                pr_title=pr_info['title']
-            )
-            github.create_pr_comment(comment)
-            print("\n💬 Comment posted to PR")
-        except Exception as e:
-            print(f"\n⚠️ Failed to post PR comment: {e}")
-    else:
-        print("\n💡 LOCAL MODE: Skipping PR comment (would post in GitHub Actions)")
+        comment = generate_summary(len(all_docs), len(all_issues), pr_number, pr_info['title'])
+        github.post_review_summary(comment)
+        print("\n💬 Comment posted")
 
-    # =========================================================
-    # 10. FINAL SUMMARY
-    # =========================================================
-    print("\n" + "=" * 55)
-    print("✅ AI Code Docs & Reviewer completed successfully!")
-    print(f"   📄 Documentation: {'updated' if all_documentation else 'none'}")
-    print(f"   🔍 Issues found: {len(all_issues)}")
-    print(f"   📁 Files analyzed: {len(all_documentation)}")
-    print("=" * 55)
+    print("\n✅ Done!")
 
 
-def generate_documentation(docs_list, pr_info):
-    """Generate markdown documentation from LLM results"""
-    from datetime import datetime
-
+def generate_documentation(docs, pr_info):
+    """Generate markdown documentation from LLM results."""
     content = f"""# Auto-Generated Documentation
 
-> **This documentation was automatically generated by AI**
-> 
-> - **PR:** #{pr_info['number']} - {pr_info['title']}
-> - **Author:** @{pr_info['author']}
-> - **Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')}
-> - **Branch:** `{pr_info['branch']}` → `{pr_info['base_branch']}`
-
----
+> **PR:** #{pr_info['number']} - {pr_info['title']}
+> **Author:** @{pr_info['author']}
+> **Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')}
 
 """
-    for item in docs_list:
+    for item in docs:
         doc = item['doc']
-        content += f"""
-## 📄 `{item['file']}`
-
-### Description
-{doc.get('description', 'No description provided')}
-
-### Functions
-"""
-        functions = doc.get('functions', [])
-        if functions:
-            for func in functions:
-                content += f"- `{func}`\n"
-        else:
-            content += "- None\n"
-
-        content += f"""
-### Classes
-"""
-        classes = doc.get('classes', [])
-        if classes:
-            for cls in classes:
-                content += f"- `{cls}`\n"
-        else:
-            content += "- None\n"
-
-        content += f"""
-### Dependencies
-"""
-        deps = doc.get('dependencies', [])
-        if deps:
-            for dep in deps:
-                content += f"- `{dep}`\n"
-        else:
-            content += "- None\n"
-
-        content += "\n---\n"
-
+        content += f"\n## 📄 `{item['file']}`\n\n"
+        content += f"**Description:** {doc.get('description', 'N/A')}\n\n"
+        content += f"**Functions:** {', '.join(doc.get('functions', [])) or 'None'}\n\n"
+        content += f"**Classes:** {', '.join(doc.get('classes', [])) or 'None'}\n\n"
+        content += f"**Dependencies:** {', '.join(doc.get('dependencies', [])) or 'None'}\n\n---\n"
     return content
 
 
 def generate_review_report(issues, pr_info):
-    """Generate markdown review report"""
-    from datetime import datetime
-
+    """Generate markdown review report with code snippets and line numbers."""
     high = [i for i in issues if i.get('severity') == 'high']
     medium = [i for i in issues if i.get('severity') == 'medium']
     low = [i for i in issues if i.get('severity') == 'low']
 
-    files_with_issues = sorted(set(i.get('file', 'unknown') for i in issues))
-
     content = f"""# Code Review Report - PR #{pr_info['number']}
 
-> **Automated code review generated by AI**
->
-> - **PR:** {pr_info['title']}
-> - **Author:** @{pr_info['author']}
-> - **Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')}
+> **PR:** {pr_info['title']}
+> **Author:** @{pr_info['author']}
+> **Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')}
 
----
+## Summary
 
-## 📊 Summary
-
-| Metric | Value |
-|--------|-------|
-| **Total issues** | {len(issues)} |
-| 🔴 **High severity** | {len(high)} |
-| 🟡 **Medium severity** | {len(medium)} |
-| 🟢 **Low severity** | {len(low)} |
-| **Files with issues** | {len(files_with_issues)} |
-
----
-
-## 📁 Files Affected
-
-"""
-    for file in files_with_issues:
-        file_issues = [i for i in issues if i.get('file') == file]
-        content += f"- `{file}` ({len(file_issues)} issue(s))\n"
-
-    content += "\n---\n\n## 🔍 Detailed Issues\n\n"
-
-    for severity in ['high', 'medium', 'low']:
-        severity_issues = [i for i in issues if i.get('severity') == severity]
-        if not severity_issues:
-            continue
-
-        severity_icon = {'high': '🔴', 'medium': '🟡', 'low': '🟢'}[severity]
-        severity_name = {'high': 'High', 'medium': 'Medium', 'low': 'Low'}[severity]
-        content += f"\n### {severity_icon} {severity_name} Severity Issues\n\n"
-
-        for issue in severity_issues:
-            content += f"""<details>
-<summary><b>{issue.get('type', 'issue').upper()}</b>: {issue.get('description', 'No description')[:80]}...</summary>
-
-| Property | Value |
+| Severity | Count |
 |----------|-------|
-| **File** | `{issue.get('file', 'unknown')}` |
-| **Severity** | {issue.get('severity', 'unknown')} |
-| **Type** | {issue.get('type', 'unknown')} |
+| 🔴 High | {len(high)} |
+| 🟡 Medium | {len(medium)} |
+| 🟢 Low | {len(low)} |
+| **Total** | {len(issues)} |
 
-**Description:** {issue.get('description', 'No description')}
-
-**Suggestion:** {issue.get('suggestion', 'No suggestion provided')}
-
-</details>
+## Detailed Issues
 
 """
+    for issue in issues:
+        icon = {'high': '🔴', 'medium': '🟡', 'low': '🟢'}.get(issue.get('severity'), '⚪')
+        line_info = f" (line {issue.get('line')})" if issue.get('line', 0) > 0 else ""
+        content += f"\n### {icon} {issue.get('type', 'issue').upper()}{line_info}\n\n"
 
-    content += """
----
+        # Create a table for each issue
+        content += "| Property | Value |\n"
+        content += "|----------|-------|\n"
+        content += f"| **File** | `{issue.get('file')}` |\n"
+        if issue.get('code_snippet'):
+            snippet = issue.get('code_snippet').replace('|', '\\|')
+            content += f"| **Code** | `{snippet[:100]}` |\n"
+        content += f"| **Description** | {issue.get('description')} |\n"
+        content += f"| **Suggestion** | {issue.get('suggestion')} |\n\n"
 
-*This review was automatically generated by AI. Please verify suggestions manually before merging.*
-"""
     return content
 
 
-def generate_pr_comment(num_files, num_issues, pr_number, pr_title):
-    """Generate comment to post in PR"""
-    severity_icons = ""
-    if num_issues > 0:
-        severity_icons = "⚠️"
-    else:
-        severity_icons = "✅"
-
+def generate_summary(num_files, num_issues, pr_number, pr_title):
+    """Generate summary comment for PR."""
+    status = "⚠️ Issues Found" if num_issues > 0 else "✅ No Issues"
     return f"""## 🤖 AI Code Reviewer
 
-{severity_icons} Automated analysis complete for **PR #{pr_number}**
+{status} for PR #{pr_number}
+
+**Files analyzed:** {num_files}
+**Issues found:** {num_issues}
+
+📄 Documentation: `docs/auto/DOCUMENTATION.md`
+🔍 Review report: `docs/reviews/PR-{pr_number}.md`
 
 ---
-
-### 📊 Summary
-
-| Metric | Result |
-|--------|--------|
-| **Files analyzed** | {num_files} |
-| **Issues found** | {num_issues} |
-
----
-
-### 📄 Generated Artifacts
-
-- 📚 **Documentation:** `docs/auto/DOCUMENTATION.md`
-- 🔍 **Detailed review:** `docs/reviews/PR-{pr_number}.md`
-
----
-
-### 💡 Next Steps
-
-1. Review the documentation and code review reports
-2. Address any high-severity issues
-3. Merge when ready
-
----
-*This review was automatically generated. Please verify suggestions manually.*
-"""
+*Automated review. Please verify manually.*"""
 
 
 if __name__ == "__main__":

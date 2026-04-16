@@ -1,98 +1,132 @@
 """
-LLM Client for Groq API.
-Handles sending code to LLM and parsing responses.
+Groq API client for the AI Code Reviewer Action.
 """
 
 import os
 import json
 import httpx
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 
 class GroqClient:
-    """Client for Groq API (Llama 3.3 70B)"""
-
-    def __init__(self, api_key: str, model: str = "llama-3.3-70b-versatile"):
+    def __init__(self, api_key: str, model: str = "llama-3.3-70b-versatile",
+                 review_prompt: Optional[str] = None,
+                 doc_prompt: Optional[str] = None):
         self.api_key = api_key
         self.model = model
         self.base_url = "https://api.groq.com/openai/v1/chat/completions"
+        self.custom_review_prompt = review_prompt
+        self.custom_doc_prompt = doc_prompt
 
     def analyze_code(self, code: str, language: str = "python") -> Dict[str, Any]:
-        """Send code to LLM for documentation and review."""
-        prompt = self._build_prompt(code, language)
+        """Send code to Groq for analysis with line numbers."""
+        numbered_code = self._add_line_numbers(code)
+        prompt = self._build_prompt(numbered_code, language)
         response = self._call_api(prompt)
         return self._parse_response(response)
 
-    def _build_prompt(self, code: str, language: str) -> str:
-        """Build prompt for the LLM with escaped backticks"""
-        return f"""You are a code documentation and review expert.
+    def _add_line_numbers(self, code: str) -> str:
+        """Add line numbers to code for reference."""
+        lines = code.split('\n')
+        numbered = '\n'.join([f"{i+1:4d} | {line}" for i, line in enumerate(lines)])
+        return numbered
 
-Analyze the following {language} code and return TWO things in JSON format:
+    def _build_prompt(self, numbered_code: str, language: str) -> str:
+        """Build prompt with numbered code."""
+        if self.custom_review_prompt and self.custom_doc_prompt:
+            return self.custom_doc_prompt + "\n\nCode:\n```\n" + numbered_code + "\n```\n\n" + self.custom_review_prompt + "\n\nReturn ONLY valid JSON."
 
-1. Documentation: Describe what this code does, its functions, classes, and dependencies
-2. Code Review: Find issues (security, performance, style, bugs)
+        if self.custom_review_prompt:
+            return self._default_doc_prompt() + "\n\nCode:\n```\n" + numbered_code + "\n```\n\n" + self.custom_review_prompt + "\n\nReturn ONLY valid JSON."
 
-Code:
-\\`\\`\\`{language}
-{code}
-\\`\\`\\`
+        if self.custom_doc_prompt:
+            return self.custom_doc_prompt + "\n\nCode:\n```\n" + numbered_code + "\n```\n\n" + self._default_review_prompt() + "\n\nReturn ONLY valid JSON."
 
-Return ONLY valid JSON in this exact format:
-{{
-  "documentation": {{
-    "description": "Brief description of what this code does",
-    "functions": ["list of function names"],
-    "classes": ["list of class names"],
-    "dependencies": ["list of imported libraries"]
-  }},
-  "review": {{
-    "issues": [
-      {{
-        "severity": "high|medium|low",
-        "type": "security|performance|style|bug",
-        "description": "What is the problem",
-        "suggestion": "How to fix it"
-      }}
-    ],
-    "overall_score": 1-10,
-    "summary": "Brief summary of code quality"
-  }}
-}}"""
+        return self._default_prompt(numbered_code, language)
+
+    def _default_doc_prompt(self) -> str:
+        return (
+            "You are a code documentation expert.\n\n"
+            "Generate documentation for the code below.\n\n"
+            "Focus on:\n"
+            "- What the code does (business purpose)\n"
+            "- Main functions and their parameters\n"
+            "- Classes and their responsibilities\n"
+            "- External dependencies"
+        )
+
+    def _default_review_prompt(self) -> str:
+        return (
+            "You are a code review expert.\n\n"
+            "Find issues in the code and return them in JSON format.\n\n"
+            "For each issue, identify the EXACT line number from the numbered code.\n"
+            "Also include a short code snippet (1-2 lines) showing the problematic code.\n\n"
+            "Focus on:\n"
+            "- Security vulnerabilities\n"
+            "- Performance problems\n"
+            "- Potential bugs\n"
+            "- Best practices violations"
+        )
+
+    def _default_prompt(self, numbered_code: str, language: str) -> str:
+        return (
+            "You are a code documentation and review expert.\n\n"
+            "Analyze the following " + language + " code and return TWO things in JSON format:\n\n"
+            "1. Documentation: Describe what this code does, its functions, classes, and dependencies\n"
+            "2. Code Review: Find issues (security, performance, style, bugs)\n\n"
+            "IMPORTANT:\n"
+            "- The code has LINE NUMBERS in the format ' N | code'\n"
+            "- For each issue, specify the EXACT line number where the problem occurs\n"
+            "- Also include a short code snippet (the line itself) as 'code_snippet'\n\n"
+            "Code with line numbers:\n"
+            "```\n" + numbered_code + "\n```\n\n"
+            "Return ONLY valid JSON in this exact format:\n"
+            "{\n"
+            '  "documentation": {\n'
+            '    "description": "...",\n'
+            '    "functions": ["..."],\n'
+            '    "classes": ["..."],\n'
+            '    "dependencies": ["..."]\n'
+            "  },\n"
+            '  "review": {\n'
+            '    "issues": [\n'
+            "      {\n"
+            '        "severity": "high|medium|low",\n'
+            '        "type": "security|performance|style|bug",\n'
+            '        "line": 42,\n'
+            '        "code_snippet": "def divide(a, b): return a / b",\n'
+            '        "description": "...",\n'
+            '        "suggestion": "..."\n'
+            "      }\n"
+            "    ],\n"
+            '    "overall_score": 7,\n'
+            '    "summary": "..."\n'
+            "  }\n"
+            "}"
+        )
 
     def _call_api(self, prompt: str) -> Dict[str, Any]:
-        """Make API call to Groq"""
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json"
         }
-
         payload = {
             "model": self.model,
-            "messages": [
-                {"role": "user", "content": prompt}
-            ],
+            "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.3,
             "response_format": {"type": "json_object"}
         }
 
         try:
-            with httpx.Client(timeout=30.0) as client:
-                response = client.post(
-                    self.base_url,
-                    headers=headers,
-                    json=payload
-                )
+            with httpx.Client(timeout=90.0) as client:
+                response = client.post(self.base_url, headers=headers, json=payload)
                 response.raise_for_status()
                 return response.json()
-        except httpx.TimeoutException:
-            print("⚠️ Groq API timeout")
-            return self._get_fallback_response()
         except Exception as e:
             print(f"⚠️ Groq API error: {e}")
             return self._get_fallback_response()
 
     def _parse_response(self, response: Dict[str, Any]) -> Dict[str, Any]:
-        """Parse LLM response, extract JSON"""
         try:
             content = response["choices"][0]["message"]["content"]
             content = content.strip()
@@ -102,13 +136,22 @@ Return ONLY valid JSON in this exact format:
                 content = content[3:]
             if content.endswith("```"):
                 content = content[:-3]
-            return json.loads(content.strip())
-        except (KeyError, json.JSONDecodeError) as e:
-            print(f"⚠️ Failed to parse LLM response: {e}")
+            result = json.loads(content.strip())
+
+            # Ensure each issue has required fields
+            if "review" in result and "issues" in result["review"]:
+                for issue in result["review"]["issues"]:
+                    if "line" not in issue:
+                        issue["line"] = 0
+                    if "code_snippet" not in issue:
+                        issue["code_snippet"] = ""
+
+            return result
+        except Exception as e:
+            print(f"⚠️ Failed to parse response: {e}")
             return self._get_fallback_response()
 
     def _get_fallback_response(self) -> Dict[str, Any]:
-        """Return safe fallback when API fails"""
         return {
             "documentation": {
                 "description": "Unable to analyze code (API error)",
@@ -122,24 +165,3 @@ Return ONLY valid JSON in this exact format:
                 "summary": "Analysis failed due to API error"
             }
         }
-
-
-# For local testing
-if __name__ == "__main__":
-    from dotenv import load_dotenv
-    load_dotenv()
-
-    api_key = os.getenv("GROQ_API_KEY")
-    if not api_key:
-        print("❌ GROQ_API_KEY not found in .env")
-        exit(1)
-
-    client = GroqClient(api_key)
-
-    test_code = """
-def divide(a, b):
-    return a / b
-"""
-
-    result = client.analyze_code(test_code)
-    print(json.dumps(result, indent=2))
