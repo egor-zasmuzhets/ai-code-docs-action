@@ -139,29 +139,42 @@ def main():
         print(f"   📊 Strategy: {strategy}")
 
         if strategy == 'signature':
-            code = extract_signatures(content, f['language'])
+            code_to_analyze = extract_signatures(content, f['language'])
         else:
-            code = content
+            code_to_analyze = content
 
         try:
-            result = llm.analyze_code(code, f['language'])
+            result = llm.analyze_code(code_to_analyze, f['language'])
         except Exception as e:
             print(f"   ❌ Analysis failed: {e}")
             continue
 
+        # Collect documentation
         doc = result.get("documentation", {})
         all_docs.append({"file": f['filename'], "doc": doc})
 
+        # Collect issues
         review = result.get("review", {})
         issues = review.get("issues", [])
         for issue in issues:
             issue["file"] = f['filename']
+            issue["language"] = f['language']
             all_issues.append(issue)
 
+            # Post inline comment if line number is available
             if os.getenv("GITHUB_ACTIONS") and issue.get('line', 0) > 0:
                 icon = {'high': '🔴', 'medium': '🟡', 'low': '🟢'}.get(issue.get('severity'), '⚪')
-                body = f"**{icon} {issue.get('severity', '').upper()}** - {issue.get('type', 'issue')}\n\n{issue.get('description')}\n\n💡 **Suggestion:** {issue.get('suggestion')}"
+                body = f"""**{icon} {issue.get('severity', '').upper()}** - {issue.get('type', 'issue')}
+
+**Issue:** {issue.get('description')}
+
+"""
+                if issue.get('code_snippet'):
+                    body += f"**Code:**\n```{f['language']}\n{issue.get('code_snippet')}\n```\n\n"
+                body += f"**Suggestion:** {issue.get('suggestion')}"
+
                 github.post_inline_comment(f['filename'], issue['line'], body)
+                print(f"      💬 Inline comment at line {issue['line']}")
 
         print(f"   ✅ Found {len(issues)} issues")
 
@@ -193,6 +206,7 @@ def main():
 
 
 def generate_documentation(docs, pr_info):
+    """Generate markdown documentation from LLM results."""
     content = f"""# Auto-Generated Documentation
 
 > **PR:** #{pr_info['number']} - {pr_info['title']}
@@ -211,6 +225,7 @@ def generate_documentation(docs, pr_info):
 
 
 def generate_review_report(issues, pr_info):
+    """Generate markdown review report with code snippets and line numbers."""
     high = [i for i in issues if i.get('severity') == 'high']
     medium = [i for i in issues if i.get('severity') == 'medium']
     low = [i for i in issues if i.get('severity') == 'low']
@@ -230,20 +245,29 @@ def generate_review_report(issues, pr_info):
 | 🟢 Low | {len(low)} |
 | **Total** | {len(issues)} |
 
-## Details
+## Detailed Issues
 
 """
     for issue in issues:
         icon = {'high': '🔴', 'medium': '🟡', 'low': '🟢'}.get(issue.get('severity'), '⚪')
-        content += f"\n### {icon} {issue.get('type', 'issue').upper()}\n"
-        content += f"- **File:** `{issue.get('file')}`\n"
-        content += f"- **Line:** {issue.get('line', 'N/A')}\n"
-        content += f"- **Description:** {issue.get('description')}\n"
-        content += f"- **Suggestion:** {issue.get('suggestion')}\n"
+        line_info = f" (line {issue.get('line')})" if issue.get('line', 0) > 0 else ""
+        content += f"\n### {icon} {issue.get('type', 'issue').upper()}{line_info}\n\n"
+
+        # Create a table for each issue
+        content += "| Property | Value |\n"
+        content += "|----------|-------|\n"
+        content += f"| **File** | `{issue.get('file')}` |\n"
+        if issue.get('code_snippet'):
+            snippet = issue.get('code_snippet').replace('|', '\\|')
+            content += f"| **Code** | `{snippet[:100]}` |\n"
+        content += f"| **Description** | {issue.get('description')} |\n"
+        content += f"| **Suggestion** | {issue.get('suggestion')} |\n\n"
+
     return content
 
 
 def generate_summary(num_files, num_issues, pr_number, pr_title):
+    """Generate summary comment for PR."""
     status = "⚠️ Issues Found" if num_issues > 0 else "✅ No Issues"
     return f"""## 🤖 AI Code Reviewer
 

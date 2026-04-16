@@ -1,6 +1,6 @@
 # AI Code Docs & Reviewer
 
-GitHub Action that automatically generates documentation and code review for Python code in Pull Requests using Groq LLM.
+GitHub Action that automatically generates documentation and code review for code in Pull Requests using Groq LLM.
 
 ## Features
 
@@ -9,7 +9,7 @@ GitHub Action that automatically generates documentation and code review for Pyt
 - 💬 **Inline comments** — Issues commented directly on lines of code
 - 🌍 **Multi-language** — Python, JavaScript, TypeScript, Go, Java, Rust, and more
 - 🎯 **Exclude patterns** — Skip tests, generated code, or folders
-- 🚀 **Fast** — Powered by Groq's Llama 3.3 70B
+- 📊 **Line numbers & code snippets** — Shows exact location of issues
 
 ## Quick Start
 
@@ -19,7 +19,7 @@ Register at [console.groq.com](https://console.groq.com) and create an API key.
 
 ### 2. Add the key to your repository
 
-Go to `Settings` → `Secrets and variables` → `Actions` → `New repository secret`
+`Settings` → `Secrets and variables` → `Actions` → `New repository secret`
 - **Name:** `GROQ_API_KEY`
 - **Secret:** your API key
 
@@ -83,10 +83,40 @@ docs/
 ├── auto/
 │   └── DOCUMENTATION.md    # Auto-generated documentation
 └── reviews/
-    └── PR-123.md            # Detailed review report
+    └── PR-123.md            # Detailed review report with line numbers
 ```
 
 Plus inline comments in the PR itself.
+
+## Example Output
+
+### Inline comment in PR:
+
+```markdown
+**🔴 HIGH** - bug
+
+**Issue:** Division by zero possible when b=0
+
+**Code:**
+```python
+def divide(a, b): return a / b
+```
+
+**Suggestion:** Add check: if b == 0: raise ValueError('Cannot divide by zero')
+```
+
+### Review report entry:
+
+```markdown
+### 🔴 BUG (line 42)
+
+| Property | Value |
+|----------|-------|
+| **File** | `titanic.py` |
+| **Code** | `def divide(a, b): return a / b` |
+| **Description** | Division by zero possible |
+| **Suggestion** | Add check for zero |
+```
 
 ## Supported Languages
 
@@ -105,46 +135,13 @@ Plus inline comments in the PR itself.
 | HTML/CSS | `.html`, `.css`, `.scss` |
 | Config | `.json`, `.yaml`, `.yml` |
 
-## Example
-
-**Pull Request comment:**
-```markdown
-## 🤖 AI Code Reviewer
-
-⚠️ Issues Found for PR #42
-
-**Files analyzed:** 3
-**Issues found:** 5
-
-📄 Documentation: docs/auto/DOCUMENTATION.md
-🔍 Review report: docs/reviews/PR-42.md
-```
-
-**Inline comment on a specific line:**
-```markdown
-🔴 HIGH - security
-
-**Issue:** Potential SQL injection in user input handling
-
-**Suggestion:** Use parameterized queries instead of string concatenation
-```
-
 ## FAQ
 
-**Is it free?**  
-Yes. Groq has a generous free tier: 30 requests per minute, 14,400 per day.
+**Is it free?** Yes. Groq has a generous free tier: 30 requests per minute, 14,400 per day.
 
-**Do I need a credit card?**  
-No. Groq's free tier requires no payment info.
+**Will it analyze its own files?** No. `docs/auto/` and `docs/reviews/` are automatically ignored.
 
-**Will it analyze its own files?**  
-No. `docs/auto/` and `docs/reviews/` are automatically ignored.
-
-**Can I use it in private repositories?**  
-Yes. Works with any repository.
-
-**What if the API fails?**  
-The Action continues gracefully and reports the error.
+**Can I use it in private repositories?** Yes. Works with any repository.
 
 ## Development
 

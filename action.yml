@@ -1,5 +1,5 @@
 name: 'AI Code Docs & Reviewer'
-description: 'Automatically generates documentation and code review for Python code in PRs using Groq LLM'
+description: 'Automatically generates documentation and code review for code in PRs using Groq LLM'
 author: 'egor-zasmuzhets'
 
 inputs:

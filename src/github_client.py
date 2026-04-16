@@ -89,9 +89,11 @@ class GitHubClient:
             return False
 
     def post_inline_comment(self, file_path: str, line_number: int, comment_body: str) -> bool:
+        """Post a comment on a specific line in the PR."""
         try:
             commit_id = self.pr.head.sha
 
+            # Try different API signatures for compatibility
             try:
                 self.pr.create_review_comment(comment_body, commit_id, file_path, line_number)
                 return True
