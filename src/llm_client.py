@@ -1,142 +1,147 @@
 """
-GitHub API client for the AI Code Reviewer Action.
+Groq API client for the AI Code Reviewer Action.
 """
 
-import base64
-from typing import List, Dict, Any, Optional
-from github import Github, GithubException
+import os
+import json
+import httpx
+from typing import Dict, Any, Optional
 
 
-class GitHubClient:
-    def __init__(self, token: str, repo_full_name: str, pr_number: int):
-        self.token = token
-        self.repo_full_name = repo_full_name
-        self.pr_number = pr_number
+class GroqClient:
+    def __init__(self, api_key: str, model: str = "llama-3.3-70b-versatile",
+                 review_prompt: Optional[str] = None,
+                 doc_prompt: Optional[str] = None):
+        self.api_key = api_key
+        self.model = model
+        self.base_url = "https://api.groq.com/openai/v1/chat/completions"
+        self.custom_review_prompt = review_prompt
+        self.custom_doc_prompt = doc_prompt
 
-        self.github = Github(token)
-        self.repo = self.github.get_repo(repo_full_name)
-        self.pr = self.repo.get_pull(pr_number)
+    def analyze_code(self, code: str, language: str = "python") -> Dict[str, Any]:
+        prompt = self._build_prompt(code, language)
+        response = self._call_api(prompt)
+        return self._parse_response(response)
 
-    def get_changed_files(self) -> List[Dict[str, Any]]:
-        changed_files = []
-        for file in self.pr.get_files():
-            file_info = {
-                "filename": file.filename,
-                "status": file.status,
-                "additions": file.additions,
-                "deletions": file.deletions,
-                "patch": file.patch,
-                "content": None
-            }
-            if file.status != "removed":
-                file_info["content"] = self._get_file_content(file.filename)
-            changed_files.append(file_info)
-        return changed_files
+    def _build_prompt(self, code: str, language: str) -> str:
+        if self.custom_review_prompt and self.custom_doc_prompt:
+            return self.custom_doc_prompt + "\n\nCode:\n```" + language + "\n" + code + "\n```\n\n" + self.custom_review_prompt + "\n\nReturn ONLY valid JSON."
 
-    def _get_file_content(self, filepath: str) -> Optional[str]:
-        try:
-            contents = self.repo.get_contents(filepath, ref=self.pr.head.sha)
-            decoded = base64.b64decode(contents.content).decode("utf-8")
-            return decoded
-        except GithubException as e:
-            if e.status == 404:
-                return None
-            raise
+        if self.custom_review_prompt:
+            return self._default_doc_prompt(code, language) + "\n\n" + self.custom_review_prompt + "\n\nReturn ONLY valid JSON."
 
-    def get_pr_info(self) -> Dict[str, Any]:
-        return {
-            "title": self.pr.title,
-            "description": self.pr.body or "",
-            "author": self.pr.user.login,
-            "branch": self.pr.head.ref,
-            "base_branch": self.pr.base.ref,
-            "url": self.pr.html_url,
-            "number": self.pr.number
+        if self.custom_doc_prompt:
+            return self.custom_doc_prompt + "\n\nCode:\n```" + language + "\n" + code + "\n```\n\n" + self._default_review_prompt() + "\n\nReturn ONLY valid JSON."
+
+        return self._default_prompt(code, language)
+
+    def _default_doc_prompt(self, code: str, language: str) -> str:
+        return (
+            "You are a code documentation expert.\n\n"
+            "Generate documentation for the following " + language + " code.\n\n"
+            "Focus on:\n"
+            "- What the code does (business purpose)\n"
+            "- Main functions and their parameters\n"
+            "- Classes and their responsibilities\n"
+            "- External dependencies\n\n"
+            "Code:\n```" + language + "\n" + code + "\n```"
+        )
+
+    def _default_review_prompt(self) -> str:
+        return (
+            "You are a code review expert.\n\n"
+            "Find issues in the code and return them in JSON format.\n\n"
+            "Focus on:\n"
+            "- Security vulnerabilities\n"
+            "- Performance problems\n"
+            "- Potential bugs\n"
+            "- Best practices violations\n\n"
+            "For each issue, provide:\n"
+            "- severity (high/medium/low)\n"
+            "- type (security/performance/style/bug)\n"
+            "- line number\n"
+            "- description\n"
+            "- suggestion"
+        )
+
+    def _default_prompt(self, code: str, language: str) -> str:
+        return (
+            "You are a code documentation and review expert.\n\n"
+            "Analyze the following " + language + " code and return TWO things in JSON format:\n\n"
+            "1. Documentation: Describe what this code does, its functions, classes, and dependencies\n"
+            "2. Code Review: Find issues (security, performance, style, bugs)\n\n"
+            "Code:\n\\`\\`\\`" + language + "\n" + code + "\n\\`\\`\\`\n\n"
+            "Return ONLY valid JSON in this exact format:\n"
+            "{\n"
+            '  "documentation": {\n'
+            '    "description": "...",\n'
+            '    "functions": ["..."],\n'
+            '    "classes": ["..."],\n'
+            '    "dependencies": ["..."]\n'
+            "  },\n"
+            '  "review": {\n'
+            '    "issues": [\n'
+            "      {\n"
+            '        "severity": "high|medium|low",\n'
+            '        "type": "security|performance|style|bug",\n'
+            '        "line": 0,\n'
+            '        "description": "...",\n'
+            '        "suggestion": "..."\n'
+            "      }\n"
+            "    ],\n"
+            '    "overall_score": 1-10,\n'
+            '    "summary": "..."\n'
+            "  }\n"
+            "}"
+        )
+
+    def _call_api(self, prompt: str) -> Dict[str, Any]:
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "model": self.model,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.3,
+            "response_format": {"type": "json_object"}
         }
 
-    def commit_documentation(self, filepath: str, content: str, commit_message: str) -> bool:
         try:
-            try:
-                existing_file = self.repo.get_contents(filepath, ref=self.pr.head.ref)
-                self.repo.update_file(
-                    path=filepath,
-                    message=commit_message,
-                    content=content,
-                    sha=existing_file.sha,
-                    branch=self.pr.head.ref
-                )
-            except GithubException as e:
-                if e.status == 404:
-                    self.repo.create_file(
-                        path=filepath,
-                        message=commit_message,
-                        content=content,
-                        branch=self.pr.head.ref
-                    )
-                else:
-                    raise
-            return True
-        except GithubException as e:
-            print(f"Failed to commit documentation: {e}")
-            return False
-
-    def create_pr_comment(self, body: str) -> bool:
-        try:
-            self.pr.create_issue_comment(body)
-            return True
-        except GithubException as e:
-            print(f"Failed to create PR comment: {e}")
-            return False
-
-    def post_inline_comment(self, file_path: str, line_number: int, comment_body: str) -> bool:
-        try:
-            commit_id = self.pr.head.sha
-
-            try:
-                self.pr.create_review_comment(comment_body, commit_id, file_path, line_number)
-                return True
-            except (TypeError, AttributeError):
-                pass
-
-            try:
-                self.pr.create_review_comment(
-                    body=comment_body,
-                    commit_id=commit_id,
-                    path=file_path,
-                    line=line_number
-                )
-                return True
-            except (TypeError, AttributeError):
-                pass
-
-            try:
-                self.pr.create_review_comment(
-                    body=comment_body,
-                    commit=commit_id,
-                    path=file_path,
-                    line=line_number
-                )
-                return True
-            except (TypeError, AttributeError):
-                pass
-
-            try:
-                review = self.pr.create_review(commit_id=commit_id, event="COMMENT")
-                review.create_comment(body=comment_body, path=file_path, line=line_number)
-                return True
-            except Exception:
-                pass
-
-            print(f"   ⚠️ Could not post inline comment")
-            return False
+            with httpx.Client(timeout=60.0) as client:
+                response = client.post(self.base_url, headers=headers, json=payload)
+                response.raise_for_status()
+                return response.json()
         except Exception as e:
-            print(f"⚠️ Failed to post inline comment: {e}")
-            return False
+            print(f"⚠️ Groq API error: {e}")
+            return self._get_fallback_response()
 
-    def post_review_summary(self, body: str) -> bool:
+    def _parse_response(self, response: Dict[str, Any]) -> Dict[str, Any]:
         try:
-            self.pr.create_issue_comment(body)
-            return True
-        except GithubException as e:
-            print(f"⚠️ Failed to post summary comment: {e}")
-            return False
+            content = response["choices"][0]["message"]["content"]
+            content = content.strip()
+            if content.startswith("```json"):
+                content = content[7:]
+            if content.startswith("```"):
+                content = content[3:]
+            if content.endswith("```"):
+                content = content[:-3]
+            return json.loads(content.strip())
+        except Exception as e:
+            print(f"⚠️ Failed to parse response: {e}")
+            return self._get_fallback_response()
+
+    def _get_fallback_response(self) -> Dict[str, Any]:
+        return {
+            "documentation": {
+                "description": "Unable to analyze code (API error)",
+                "functions": [],
+                "classes": [],
+                "dependencies": []
+            },
+            "review": {
+                "issues": [],
+                "overall_score": 5,
+                "summary": "Analysis failed due to API error"
+            }
+        }
