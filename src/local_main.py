@@ -1,14 +1,15 @@
 """
-Main entry point for the GitHub Action.
+Local development entry point for the AI Code Reviewer Action.
 
-This module is executed when running in GitHub Actions environment.
-All environment variables are provided by the GitHub runner.
+This module is used for testing the Action locally.
+It loads environment variables from a .env file and simulates GitHub Actions.
 """
 
 import os
 import sys
 from datetime import datetime
 from typing import Dict, List, Any
+from dotenv import load_dotenv
 
 from github_client import GitHubClient
 from llm_client import GroqClient
@@ -17,37 +18,60 @@ from utils import parse_exclude_patterns, is_excluded
 from logger import Logger
 
 
-def get_env_or_exit(var_name: str) -> str:
+def load_env_file() -> None:
     """
-    Get environment variable or exit with error.
+    Load environment variables from .env file.
+
+    Exits with error if .env file doesn't exist or is incomplete.
+    """
+    load_dotenv()
+    Logger.info(f"Loaded .env")
+
+
+def get_env_or_exit_local(var_name: str) -> str:
+    """
+    Get environment variable or exit with helpful message.
 
     Args:
         var_name (str): Name of the environment variable
 
     Returns:
         str: Value of the environment variable
-
-    Note:
-        Exits the program if the variable is not set.
     """
     value = os.getenv(var_name)
     if not value:
-        Logger.error(f"Missing required environment variable: {var_name}")
+        Logger.error(f"Missing {var_name} in .env file")
+        print(f"\n💡 Add {var_name}=... to your .env file")
         sys.exit(1)
     return value
 
 
+def preview_output(content: str, max_chars: int = 500) -> None:
+    """
+    Print a preview of generated content without committing.
+
+    Args:
+        content (str): Content to preview
+        max_chars (int): Maximum characters to show
+    """
+    print("\n   Preview:")
+    print("   " + content[:max_chars].replace("\n", "\n   ") + ("..." if len(content) > max_chars else ""))
+
+
 def main() -> None:
-    """Main entry point for GitHub Actions."""
-    Logger.header("AI Code Docs & Reviewer - Running")
+    """Local development entry point."""
+    Logger.header("AI Code Docs & Reviewer - LOCAL MODE")
+
+    # Load .env file
+    load_env_file()
 
     # =========================================================
     # 1. GET ENVIRONMENT VARIABLES
     # =========================================================
-    token = get_env_or_exit("GITHUB_TOKEN")
-    repo = get_env_or_exit("GITHUB_REPOSITORY")
-    pr_number_str = get_env_or_exit("GITHUB_PR_NUMBER")
-    groq_api_key = get_env_or_exit("GROQ_API_KEY")
+    token = get_env_or_exit_local("GITHUB_TOKEN")
+    repo = get_env_or_exit_local("GITHUB_REPOSITORY")
+    pr_number_str = get_env_or_exit_local("GITHUB_PR_NUMBER")
+    groq_api_key = get_env_or_exit_local("GROQ_API_KEY")
 
     groq_model = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
     review_prompt = os.getenv("REVIEW_PROMPT")
@@ -186,24 +210,7 @@ def main() -> None:
             issue["language"] = f['language']
             all_issues.append(issue)
 
-            # Post inline comment if line number is available
-            if issue.get('line', 0) > 0:
-                github.post_inline_comment(
-                    f['filename'],
-                    issue['line'],
-                    format_inline_comment(issue, f['language'])
-                )
-                Logger.inline_posted(issue['line'])
-
         Logger.success(f"Found {len(issues)} issues")
-        for issue in issues[:3]:  # Show first 3 issues in log
-            Logger.issue_found(
-                issue.get('severity', 'low'),
-                issue.get('type', 'issue'),
-                issue.get('line')
-            )
-        if len(issues) > 3:
-            Logger.debug(f"... and {len(issues) - 3} more")
 
     Logger.summary({
         'files': len(all_docs),
@@ -212,71 +219,24 @@ def main() -> None:
     })
 
     # =========================================================
-    # 7. GENERATE DOCUMENTATION
+    # 7. PREVIEW DOCUMENTATION (no commit in local mode)
     # =========================================================
     if all_docs:
         doc_content = generate_documentation(all_docs, pr_info)
-        try:
-            github.commit_documentation(
-                doc_output_path,
-                doc_content,
-                f"docs: update PR #{pr_number}"
-            )
-            Logger.success(f"Documentation: {doc_output_path}")
-        except Exception as e:
-            Logger.error(f"Failed to commit documentation: {e}")
+        print(f"\n📄 Documentation preview (not committed): {doc_output_path}")
+        preview_output(doc_content)
 
     # =========================================================
-    # 8. GENERATE REVIEW REPORT
+    # 8. PREVIEW REVIEW REPORT (no commit in local mode)
     # =========================================================
     if all_issues:
         review_content = generate_review_report(all_issues, pr_info)
         review_path = f"{review_output_path}PR-{pr_number}.md"
-        try:
-            github.commit_documentation(
-                review_path,
-                review_content,
-                f"review: PR #{pr_number}"
-            )
-            Logger.success(f"Review report: {review_path}")
-        except Exception as e:
-            Logger.error(f"Failed to commit review report: {e}")
+        print(f"\n🔍 Review report preview (not committed): {review_path}")
+        preview_output(review_content)
 
-    # =========================================================
-    # 9. POST SUMMARY COMMENT
-    # =========================================================
-    try:
-        comment = generate_summary(len(all_docs), len(all_issues), pr_number, pr_info['title'])
-        github.post_review_summary(comment)
-        Logger.success("Summary comment posted to PR")
-    except Exception as e:
-        Logger.warning(f"Failed to post summary comment: {e}")
-
-    print()
-    Logger.success("Done!")
-
-
-def format_inline_comment(issue: Dict[str, Any], language: str) -> str:
-    """
-    Format an issue as an inline comment for PR.
-
-    Args:
-        issue (Dict[str, Any]): Issue dictionary with severity, type, description, etc.
-        language (str): Programming language for code block syntax highlighting
-
-    Returns:
-        str: Formatted markdown comment
-    """
-    icon = {'high': '🔴', 'medium': '🟡', 'low': '🟢'}.get(issue.get('severity'), '⚪')
-    body = f"""**{icon} {issue.get('severity', '').upper()}** - {issue.get('type', 'issue')}
-
-**Issue:** {issue.get('description')}
-
-"""
-    if issue.get('code_snippet'):
-        body += f"**Code:**\n```{language}\n{issue.get('code_snippet')}\n```\n\n"
-    body += f"**Suggestion:** {issue.get('suggestion')}"
-    return body
+    print("\n💡 LOCAL MODE: No comments posted, no files committed")
+    print("\n✅ Done!")
 
 
 def generate_documentation(docs: List[Dict[str, Any]], pr_info: Dict[str, Any]) -> str:
@@ -355,34 +315,6 @@ def generate_review_report(issues: List[Dict[str, Any]], pr_info: Dict[str, Any]
         content += f"| **Suggestion** | {issue.get('suggestion')} |\n\n"
 
     return content
-
-
-def generate_summary(num_files: int, num_issues: int, pr_number: int, pr_title: str) -> str:
-    """
-    Generate summary comment for PR.
-
-    Args:
-        num_files (int): Number of files analyzed
-        num_issues (int): Number of issues found
-        pr_number (int): Pull Request number
-        pr_title (str): Pull Request title
-
-    Returns:
-        str: Markdown formatted summary comment
-    """
-    status = "⚠️ Issues Found" if num_issues > 0 else "✅ No Issues"
-    return f"""## 🤖 AI Code Reviewer
-
-{status} for PR #{pr_number}
-
-**Files analyzed:** {num_files}
-**Issues found:** {num_issues}
-
-📄 Documentation: `docs/auto/DOCUMENTATION.md`
-🔍 Review report: `docs/reviews/PR-{pr_number}.md`
-
----
-*Automated review. Please verify manually.*"""
 
 
 if __name__ == "__main__":
